@@ -7,19 +7,14 @@
 
 ---
 
-## PHASE 1: Create the Library (5 min, do once)
+## PHASE 1: Library Already Created ✓
 
-1. Go to [script.google.com](https://script.google.com)
-2. Click **New Project**
-3. Click "Untitled project" → rename to **TaskSyncLib**
-4. Delete all default code
-5. Copy entire contents of `TaskSyncLib.gs` → paste
-6. Click **Deploy** → **New deployment**
-7. Click gear ⚙️ → Select **Library**
-8. Click **Deploy**
-9. **COPY THE DEPLOYMENT ID** (looks like: `1ABC...xyz`)
+Library ID (already deployed):
+```
+AKfycbzsIBfQQGAlwrppWDiRzc3kjn1qKKWkR8UNEbD95zSkoUVgV04Lu2FkdfrnarwJGTBi
+```
 
-Keep this ID handy - you'll paste it 18 times.
+This ID is embedded in `TaskSyncWrapper.gs` - just copy-paste the wrapper code.
 
 ---
 

@@ -10,18 +10,11 @@
  *
  * 2. Add the TaskSyncLib library:
  *    a. In Apps Script editor: Libraries (+ icon) → Add a library
- *    b. Paste the TaskSyncLib deployment ID: [YOUR_LIBRARY_ID_HERE]
+ *    b. Paste this ID: AKfycbzsIBfQQGAlwrppWDiRzc3kjn1qKKWkR8UNEbD95zSkoUVgV04Lu2FkdfrnarwJGTBi
  *    c. Select latest version
  *    d. Set identifier to: TaskSyncLib
  *
- * 3. Create an installable onEdit trigger:
- *    a. In Apps Script editor: Triggers (clock icon) → Add Trigger
- *    b. Choose function: onEditTrigger
- *    c. Event source: From spreadsheet
- *    d. Event type: On edit
- *    e. Save (authorize when prompted)
- *
- * 4. (Optional) Run setupTrigger() once to auto-create the trigger
+ * 3. Run setupTrigger() to auto-create the onEdit trigger
  *
  * IMPORTANT: Do NOT use a simple onEdit(e) trigger - it won't have
  * permissions to access other spreadsheets. Must be installable.
