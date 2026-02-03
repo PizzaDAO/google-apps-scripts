@@ -1,0 +1,74 @@
+# ===========================================
+# SECRETS - NEVER COMMIT THESE
+# ===========================================
+
+# OAuth and service account credentials
+credentials.json
+oauth-credentials.json
+oauth-token.json
+*.credentials.json
+service-account*.json
+
+# Secret setup files (may contain hardcoded secrets)
+setup-script-properties.gs
+temp-set-secrets.js
+*.secrets.js
+*.secrets.gs
+set-*-properties.js
+# Master setup files (contain hardcoded secrets for deployment)
+master-setup-infrastructure.gs
+master-setup-infrastructure.js
+CrewWebhooks/master-setup-infrastructure.js
+Wrappers/**/master-setup-infrastructure.gs
+Wrappers/**/master-setup-infrastructure.js
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# ===========================================
+# CLASP CONFIG (contains script IDs - not secret but per-dev)
+# ===========================================
+.clasp.json
+**/.clasp.json
+
+# ===========================================
+# NODE / NPM
+# ===========================================
+node_modules/
+npm-debug.log*
+yarn-error.log*
+package-lock.json
+
+# ===========================================
+# TEMPORARY FILES
+# ===========================================
+/tmp/
+*.tmp
+*.temp
+tmpclaude-*
+*_output.txt
+recent_logs.txt
+nul
+
+# ===========================================
+# OS FILES
+# ===========================================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===========================================
+# IDE / EDITOR
+# ===========================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ===========================================
+# CLAUDE CODE
+# ===========================================
+.claude/

@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crew Announcement Button Integration</title>
+    <style>
+        .announce-btn {
+            padding: 12px 24px;
+            background: #5865F2;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .announce-btn:hover:not(:disabled) {
+            background: #4752C4;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(88, 101, 242, 0.3);
+        }
+
+        .announce-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .status {
+            margin-top: 16px;
+            padding: 12px;
+            border-radius: 6px;
+            display: none;
+        }
+
+        .status.success {
+            background: #57F287;
+            color: #0d0d0d;
+            display: block;
+        }
+
+        .status.error {
+            background: #ED4245;
+            color: white;
+            display: block;
+        }
+
+        .status.loading {
+            background: #FEE75C;
+            color: #0d0d0d;
+            display: block;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Crew Announcement Button Example</h1>
+
+<!-- Example button for a crew page -->
+<button class="announce-btn" id="announce-btn" onclick="triggerAnnouncement()">
+    🎉 Announce Crew Call
+</button>
+<div class="status" id="status"></div>
+
+<script>
+// ============================================================
+// CONFIGURATION
+// ============================================================
+
+// Store these values securely in your website's environment/config
+// DO NOT hardcode the API key in client-side JavaScript in production!
+const CREW_CONFIG = {
+  ops: {
+    spreadsheetId: '1YVUJHWlyivugIWERa2qsaNGTQDN7Ogu1lIhATO8c6kU',
+    apiUrl: 'REPLACE_WITH_OPS_WEB_APP_URL'  // Get from Apps Script deployment
+  },
+  comms: {
+    spreadsheetId: '1TGemZCKSBAC2-ENVHgkrRkQ0xf3pdsgy0u7MOq-IwW4',
+    apiUrl: 'REPLACE_WITH_COMMS_WEB_APP_URL'  // Get from Apps Script deployment
+  },
+  creative: {
+    spreadsheetId: '1W5ESCefvjc7QxV_yrRoibfKIuQTtVZy9nnozx-RYIng',
+    apiUrl: 'REPLACE_WITH_CREATIVE_WEB_APP_URL'  // Get from Apps Script deployment
+  }
+};
+
+// IMPORTANT: Store API key securely on server-side or in environment variables
+// This is just an example - do NOT expose API keys in client code!
+const API_KEY = 'YOUR_API_KEY_HERE';
+
+// ============================================================
+// MAIN FUNCTION
+// ============================================================
+
+/**
+ * Triggers crew announcement by calling Apps Script web app endpoint
+ */
+async function triggerAnnouncement() {
+  const btn = document.getElementById('announce-btn');
+  const status = document.getElementById('status');
+
+  // Determine which crew this page is for
+  // You'll need to implement this based on your site structure
+  const crewName = getCurrentCrew();
+
+  if (!crewName || !CREW_CONFIG[crewName]) {
+    showStatus('error', 'Unknown crew page');
+    return;
+  }
+
+  const config = CREW_CONFIG[crewName];
+
+  // Disable button and show loading state
+  btn.disabled = true;
+  showStatus('loading', '⏳ Triggering announcement...');
+
+  try {
+    const response = await fetch(config.apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        apiKey: API_KEY,
+        spreadsheetId: config.spreadsheetId
+      })
+    });
+
+    const result = await response.json();
+
+    if (result.success) {
+      showStatus('success',
+        `✅ Announcement sent successfully!<br>` +
+        `Tweet: <a href="${result.tweetUrl}" target="_blank">${result.tweetUrl}</a><br>` +
+        `Time: ${new Date(result.timestamp).toLocaleString()}`
+      );
+    } else {
+      showStatus('error', `❌ Error: ${result.error}`);
+    }
+  } catch (err) {
+    showStatus('error', `❌ Network error: ${err.message}`);
+    console.error('Announcement error:', err);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/**
+ * Helper: Show status message
+ */
+function showStatus(type, message) {
+  const status = document.getElementById('status');
+  status.className = `status ${type}`;
+  status.innerHTML = message;
+}
+
+/**
+ * Helper: Determine current crew based on page context
+ * IMPLEMENT THIS based on your website structure
+ */
+function getCurrentCrew() {
+  // Example implementations:
+
+  // Option 1: From URL path
+  const path = window.location.pathname;
+  if (path.includes('/ops')) return 'ops';
+  if (path.includes('/comms')) return 'comms';
+  if (path.includes('/creative')) return 'creative';
+
+  // Option 2: From data attribute
+  const btn = document.getElementById('announce-btn');
+  return btn.dataset.crew;
+
+  // Option 3: From page title
+  const title = document.title.toLowerCase();
+  if (title.includes('ops')) return 'ops';
+  if (title.includes('comms')) return 'comms';
+  if (title.includes('creative')) return 'creative';
+
+  return null;
+}
+
+</script>
+
+<!--
+============================================================
+ALTERNATIVE: Button with data attribute
+============================================================
+If each crew has its own page, you can specify the crew directly:
+-->
+
+<!-- Example for Ops crew page: -->
+<!-- <button class="announce-btn" data-crew="ops" onclick="triggerAnnouncement()">
+    🎉 Announce Ops Crew Call
+</button> -->
+
+<!-- Example for Comms crew page: -->
+<!-- <button class="announce-btn" data-crew="comms" onclick="triggerAnnouncement()">
+    🎉 Announce Comms Crew Call
+</button> -->
+
+</body>
+</html>

@@ -44,7 +44,62 @@ const CONFIG = {
     'Priority', 'Stage', 'Task', 'Due', 'Lead', 'Lead ID',
     'Crews', 'Goal', 'Tags', 'Notes'
   ],
+
+  // Logging
+  logsSheetName: 'Sync Logs',
+  maxLogRows: 500,  // Keep last 500 log entries
 };
+
+/***************
+ * LOGGING
+ ***************/
+function log_(level, action, details) {
+  try {
+    const ss = SpreadsheetApp.openById(CONFIG.masterSpreadsheetId);
+    let logsSheet = ss.getSheetByName(CONFIG.logsSheetName);
+
+    // Create logs sheet if it doesn't exist
+    if (!logsSheet) {
+      logsSheet = ss.insertSheet(CONFIG.logsSheetName);
+      logsSheet.getRange(1, 1, 1, 6).setValues([[
+        'Timestamp', 'Level', 'Action', 'TaskID', 'Details', 'User'
+      ]]);
+      logsSheet.getRange(1, 1, 1, 6).setFontWeight('bold');
+      logsSheet.setFrozenRows(1);
+    }
+
+    const timestamp = new Date().toISOString();
+    const user = Session.getActiveUser().getEmail() || 'unknown';
+    const taskId = details.taskId || '';
+    const detailsStr = JSON.stringify(details);
+
+    // Insert at row 2 (after header) to keep newest at top
+    logsSheet.insertRowAfter(1);
+    logsSheet.getRange(2, 1, 1, 6).setValues([[
+      timestamp, level, action, taskId, detailsStr, user
+    ]]);
+
+    // Trim old logs if needed
+    const lastRow = logsSheet.getLastRow();
+    if (lastRow > CONFIG.maxLogRows + 1) {
+      logsSheet.deleteRows(CONFIG.maxLogRows + 2, lastRow - CONFIG.maxLogRows - 1);
+    }
+  } catch (err) {
+    console.error('Logging failed:', err);
+  }
+}
+
+function logInfo_(action, details) {
+  log_('INFO', action, details);
+}
+
+function logError_(action, details) {
+  log_('ERROR', action, details);
+}
+
+function logDebug_(action, details) {
+  log_('DEBUG', action, details);
+}
 
 /***************
  * MAIN ENTRY POINT - Called by all spreadsheets' onEdit triggers
@@ -52,9 +107,28 @@ const CONFIG = {
 function handleEdit(e) {
   if (!e || !e.range) return;
 
+  const ss = e.source;
+  const sheet = e.range.getSheet();
+  const editInfo = {
+    spreadsheet: ss.getName(),
+    sheet: sheet.getName(),
+    range: e.range.getA1Notation(),
+    value: e.value,
+    oldValue: e.oldValue
+  };
+
+  // BEFORE LOCK: Validate edit and stamp timestamp to protect from overwrites
+  // This prevents race conditions where another sync overwrites our pending edit
+  const editContext = validateAndStampEdit_(e);
+  if (!editContext) {
+    // Not a valid tasks table edit, ignore
+    return;
+  }
+
   // Library's lock - shared across ALL callers
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(30000)) {
+    logInfo_('LOCK_FAILED', { ...editInfo, reason: 'Could not acquire lock' });
     console.log('Could not acquire lock, skipping sync');
     return;
   }
@@ -64,22 +138,23 @@ function handleEdit(e) {
     const props = PropertiesService.getScriptProperties();
 
     if (props.getProperty('SYNC_IN_PROGRESS') === '1') {
+      logInfo_('SYNC_SKIPPED', { ...editInfo, reason: 'Sync already in progress' });
       console.log('Sync already in progress, skipping');
       return;
     }
 
-    const ss = e.source;
-    const sheet = e.range.getSheet();
-
     // Route to appropriate handler
     if (ss.getId() === CONFIG.masterSpreadsheetId &&
         sheet.getName() === CONFIG.masterSheetName) {
-      handleMasterEdit_(e, props);
+      logInfo_('EDIT_RECEIVED', { ...editInfo, source: 'master' });
+      handleMasterEdit_(e, props, editContext);
     } else {
-      handleCrewEdit_(e, props);
+      logInfo_('EDIT_RECEIVED', { ...editInfo, source: 'crew' });
+      handleCrewEdit_(e, props, editContext);
     }
 
   } catch (err) {
+    logError_('SYNC_ERROR', { ...editInfo, error: err.message, stack: err.stack });
     console.error('TaskSyncLib handleEdit error:', err);
     throw err;
   } finally {
@@ -88,10 +163,90 @@ function handleEdit(e) {
   }
 }
 
+/**
+ * Validates that the edit is within a tasks table and stamps UpdatedAt immediately.
+ * This MUST happen before acquiring the lock to protect the row from being overwritten
+ * by another sync operation while we're waiting for the lock.
+ *
+ * Returns edit context if valid, null if edit should be ignored.
+ */
+function validateAndStampEdit_(e) {
+  const ss = e.source;
+  const sheet = e.range.getSheet();
+  const row = e.range.getRow();
+  const col = e.range.getColumn();
+
+  // Try to find the tasks table
+  let table;
+  try {
+    table = getTasksTable_(sheet);
+  } catch (err) {
+    // No tasks table on this sheet
+    return null;
+  }
+
+  // Ensure we have the metadata columns
+  ensureTableHasColumns_(table, [CONFIG.idColumnName, ...CONFIG.metaColumns]);
+
+  // Check if edit is within the tasks data area
+  const dataTop = table.startRow + 1;
+  const actualLastRow = sheet.getLastRow();
+  const dataBottom = Math.max(dataTop, actualLastRow);
+  const dataLeft = table.startCol;
+  const dataRight = dataLeft + table.numCols - 1;
+
+  if (row < dataTop || row > dataBottom || col < dataLeft || col > dataRight) {
+    return null;
+  }
+
+  // Check if the Task column has a value (skip blank rows)
+  const taskIdx = table.headerMap[CONFIG.taskTitleHeader];
+  if (CONFIG.skipIfTaskBlank && taskIdx != null) {
+    const taskValue = sheet.getRange(row, table.startCol + taskIdx).getValue();
+    if (taskValue === '' || taskValue == null) {
+      return null;
+    }
+  }
+
+  // CRITICAL: Stamp UpdatedAt immediately to protect this row from overwrites
+  // Any propagation that arrives while we're waiting for the lock will see
+  // this timestamp and won't overwrite our pending edit
+  const updatedAtIdx = table.headerMap.UpdatedAt;
+  const updatedByIdx = table.headerMap.UpdatedBy;
+  const nowIso = new Date().toISOString();
+  const user = Session.getActiveUser().getEmail() || '';
+
+  sheet.getRange(row, table.startCol + updatedAtIdx).setValue(nowIso);
+  sheet.getRange(row, table.startCol + updatedByIdx).setValue(user);
+
+  // Track which columns were edited (for field-level sync)
+  // Convert absolute column positions to relative indices within the table
+  const editedColIndices = new Set();
+  const editStartCol = e.range.getColumn();
+  const editNumCols = e.range.getNumColumns();
+
+  for (let c = 0; c < editNumCols; c++) {
+    const absCol = editStartCol + c;
+    const relIdx = absCol - table.startCol;
+    if (relIdx >= 0 && relIdx < table.numCols) {
+      editedColIndices.add(relIdx);
+    }
+  }
+
+  return {
+    table,
+    row,
+    col,
+    stampedAt: nowIso,
+    stampedBy: user,
+    editedColIndices: Array.from(editedColIndices)
+  };
+}
+
 /***************
  * CREW EDIT HANDLER
  ***************/
-function handleCrewEdit_(e, props) {
+function handleCrewEdit_(e, props, editContext) {
   const crews = loadCrewsFromMappings_();
   const ss = e.source;
   const sheet = e.range.getSheet();
@@ -103,22 +258,11 @@ function handleCrewEdit_(e, props) {
   );
   if (!crewEntry) return;
 
-  const table = getTasksTable_(sheet);
-  ensureTableHasColumns_(table, [CONFIG.idColumnName, ...CONFIG.metaColumns]);
+  // Use the table from editContext (already validated and has fresh columns)
+  const table = editContext.table;
+  const row = editContext.row;
 
-  // Check if edit is within the tasks data area
-  // Use fresh row count from sheet to handle newly added rows
-  const row = e.range.getRow();
-  const col = e.range.getColumn();
-  const dataTop = table.startRow + 1;
-  const actualLastRow = sheet.getLastRow();
-  const dataBottom = Math.max(dataTop, actualLastRow);
-  const dataLeft = table.startCol;
-  const dataRight = dataLeft + table.numCols - 1;
-
-  if (row < dataTop || row > dataBottom || col < dataLeft || col > dataRight) return;
-
-  // Get the edited row's data
+  // Get the edited row's data (re-read to get current values including our timestamp)
   const rowRange = sheet.getRange(row, table.startCol, 1, table.numCols);
   const rowValues = rowRange.getValues()[0];
   const rowFormulas = rowRange.getFormulas()[0];
@@ -130,20 +274,22 @@ function handleCrewEdit_(e, props) {
   const taskIdx = table.headerMap[CONFIG.taskTitleHeader];
   const crewsIdx = table.headerMap[CONFIG.crewsColumnName];
 
-  // Skip blank rows
-  if (CONFIG.skipIfTaskBlank && taskIdx != null) {
-    const t = rowValues[taskIdx];
-    if (t === '' || t == null) return;
-  }
-
   props.setProperty('SYNC_IN_PROGRESS', '1');
 
   // Ensure task has an ID
-  if (!rowValues[idIdx]) {
+  const hadIdBefore = !!rowValues[idIdx];
+  if (!hadIdBefore) {
     const id = Utilities.getUuid();
     sheet.getRange(row, table.startCol + idIdx).setValue(id);
     rowValues[idIdx] = id;
   }
+
+  // Check if task exists in Master (to determine if it's truly new)
+  const masterSheet = openSheet_(CONFIG.masterSpreadsheetId, CONFIG.masterSheetName);
+  const masterTable = getTasksTable_(masterSheet);
+  ensureTableHasColumns_(masterTable, [CONFIG.idColumnName, ...CONFIG.metaColumns]);
+  const masterIndex = buildIndexById_(masterTable);
+  const existsInMaster = !!masterIndex[rowValues[idIdx]];
 
   // Handle crew membership
   if (crewsIdx == null) throw new Error(`Missing required column: "${CONFIG.crewsColumnName}"`);
@@ -157,63 +303,84 @@ function handleCrewEdit_(e, props) {
   const currentlyHasThisCrew = crewsSet.has(thisCrewKey);
   const userEditedCrewsCell = editedIsSingleCell && editedColAbs === crewsColAbs;
 
-  // If user explicitly removed this crew from Crews column, honor that
-  // Otherwise ensure this crew is listed
-  if (!currentlyHasThisCrew && userEditedCrewsCell) {
-    // User removed this crew - propagation will delete row from this sheet
+  // Task is "new" if it doesn't exist in Master yet
+  // For NEW tasks: always add this crew to Crews (task was created here)
+  // For EXISTING tasks: if user explicitly removed this crew from Crews column, honor that
+  const isNewTask = !existsInMaster;
+  const userRemovingThisCrew = !isNewTask && !currentlyHasThisCrew && userEditedCrewsCell;
+
+  if (userRemovingThisCrew) {
+    // User removed this crew from existing task - propagation will delete row from this sheet
+    logInfo_('CREW_REMOVED', {
+      taskId: rowValues[idIdx],
+      crew: crewEntry.crewName,
+      newCrews: rowValues[crewsIdx]
+    });
   } else {
     if (ensureCrewListedInCrewsCell_(rowValues, table.headerMap, crewEntry.crewName)) {
       sheet.getRange(row, crewsColAbs).setValue(rowValues[crewsIdx]);
+      logInfo_('CREW_ADDED', {
+        taskId: rowValues[idIdx],
+        crew: crewEntry.crewName,
+        isNewTask,
+        crews: rowValues[crewsIdx]
+      });
     }
   }
 
-  // Update metadata
-  const nowIso = new Date().toISOString();
-  const by = Session.getActiveUser().getEmail() || '';
-  sheet.getRange(row, table.startCol + updatedAtIdx).setValue(nowIso);
-  sheet.getRange(row, table.startCol + updatedByIdx).setValue(by);
-  rowValues[updatedAtIdx] = nowIso;
-  rowValues[updatedByIdx] = by;
+  // Use the timestamp from editContext (already stamped before lock)
+  rowValues[updatedAtIdx] = editContext.stampedAt;
+  rowValues[updatedByIdx] = editContext.stampedBy;
 
-  // Sync to master
-  const masterSheet = openSheet_(CONFIG.masterSpreadsheetId, CONFIG.masterSheetName);
-  const masterTable = getTasksTable_(masterSheet);
-  ensureTableHasColumns_(masterTable, [CONFIG.idColumnName, ...CONFIG.metaColumns]);
-  const masterIndex = buildIndexById_(masterTable);
+  // Build the set of edited columns (user's edit + any columns we modified)
+  const editedColIndices = new Set(editContext.editedColIndices);
+  // Always include metadata columns
+  editedColIndices.add(updatedAtIdx);
+  editedColIndices.add(updatedByIdx);
+  // If we added an ID, include that
+  if (!hadIdBefore) editedColIndices.add(idIdx);
+  // If we modified Crews, include that
+  if (crewsIdx != null) editedColIndices.add(crewsIdx);
 
-  upsertIntoMaster_(masterTable, masterIndex, table.header, rowValues, rowFormulas, rowRich);
+  // Sync to master (reuse masterTable from earlier, rebuild index in case rows changed)
+  const freshMasterIndex = buildIndexById_(masterTable);
+
+  const taskName = rowValues[taskIdx] || '';
+  logInfo_('CREW_TO_MASTER', {
+    taskId: rowValues[idIdx],
+    taskName,
+    fromCrew: crewEntry.crewName,
+    row,
+    editedCols: Array.from(editedColIndices)
+  });
+
+  const editedColsArray = Array.from(editedColIndices);
+  upsertIntoMaster_(masterTable, freshMasterIndex, table.header, rowValues, rowFormulas, rowRich, editedColsArray);
 
   // Propagate to all crews (including back to source for consistency)
-  propagateTaskFromMaster_(rowValues[idIdx], crews);
+  propagateTaskFromMaster_(rowValues[idIdx], crews, editedColsArray, table.header);
 
-  // Sort once at the end
-  sortTasksTableByPriority_(getTasksTable_(sheet));
-  sortTasksTableByPriority_(getTasksTable_(masterSheet));
+  logInfo_('SYNC_COMPLETE', {
+    taskId: rowValues[idIdx],
+    taskName,
+    source: 'crew',
+    fromCrew: crewEntry.crewName
+  });
 }
 
 /***************
  * MASTER EDIT HANDLER
  ***************/
-function handleMasterEdit_(e, props) {
+function handleMasterEdit_(e, props, editContext) {
   const ss = e.source;
   const sheet = e.range.getSheet();
   const crews = loadCrewsFromMappings_();
 
-  const table = getTasksTable_(sheet);
-  ensureTableHasColumns_(table, [CONFIG.idColumnName, ...CONFIG.metaColumns]);
+  // Use the table from editContext (already validated and has fresh columns)
+  const table = editContext.table;
+  const row = editContext.row;
 
-  // Check if edit is within the tasks data area
-  // Use fresh row count from sheet to handle newly added rows
-  const row = e.range.getRow();
-  const col = e.range.getColumn();
-  const dataTop = table.startRow + 1;
-  const actualLastRow = sheet.getLastRow();
-  const dataBottom = Math.max(dataTop, actualLastRow);
-  const dataLeft = table.startCol;
-  const dataRight = dataLeft + table.numCols - 1;
-
-  if (row < dataTop || row > dataBottom || col < dataLeft || col > dataRight) return;
-
+  // Get the edited row's data (re-read to get current values including our timestamp)
   const rowRange = sheet.getRange(row, table.startCol, 1, table.numCols);
   const rowValues = rowRange.getValues()[0];
   const rowFormulas = rowRange.getFormulas()[0];
@@ -224,13 +391,10 @@ function handleMasterEdit_(e, props) {
   const updatedByIdx = table.headerMap.UpdatedBy;
   const taskIdx = table.headerMap[CONFIG.taskTitleHeader];
 
-  // Skip blank rows
-  if (CONFIG.skipIfTaskBlank && taskIdx != null) {
-    const t = rowValues[taskIdx];
-    if (t === '' || t == null) return;
-  }
-
   props.setProperty('SYNC_IN_PROGRESS', '1');
+
+  // Track if we added an ID
+  const hadIdBefore = !!rowValues[idIdx];
 
   // Ensure task has an ID
   if (!rowValues[idIdx]) {
@@ -239,23 +403,41 @@ function handleMasterEdit_(e, props) {
     rowValues[idIdx] = id;
   }
 
-  // Update metadata
-  const nowIso = new Date().toISOString();
-  const by = Session.getActiveUser().getEmail() || '';
-  sheet.getRange(row, table.startCol + updatedAtIdx).setValue(nowIso);
-  sheet.getRange(row, table.startCol + updatedByIdx).setValue(by);
-  rowValues[updatedAtIdx] = nowIso;
-  rowValues[updatedByIdx] = by;
+  // Use the timestamp from editContext (already stamped before lock)
+  rowValues[updatedAtIdx] = editContext.stampedAt;
+  rowValues[updatedByIdx] = editContext.stampedBy;
 
-  // Update master's own record
-  const masterIndex = buildIndexById_(table);
-  upsertIntoMaster_(table, masterIndex, table.header, rowValues, rowFormulas, rowRich);
+  // Build the set of edited columns (user's edit + any columns we modified)
+  const editedColIndices = new Set(editContext.editedColIndices);
+  // Always include metadata columns
+  editedColIndices.add(updatedAtIdx);
+  editedColIndices.add(updatedByIdx);
+  // If we added an ID, include that
+  if (!hadIdBefore) editedColIndices.add(idIdx);
 
-  // Propagate to all crews
-  propagateTaskFromMaster_(rowValues[idIdx], crews);
+  const editedColsArray = Array.from(editedColIndices);
 
-  // Sort master once at the end
-  sortTasksTableByPriority_(getTasksTable_(sheet));
+  // Update master's own record (for field-level, just update the edited cells directly)
+  // No need to call upsertIntoMaster_ for Master edits since we already wrote the row
+  // The timestamp was already stamped in validateAndStampEdit_
+
+  const taskName = rowValues[taskIdx] || '';
+  logInfo_('MASTER_TO_CREWS', {
+    taskId: rowValues[idIdx],
+    taskName,
+    row,
+    crewCount: crews.length,
+    editedCols: editedColsArray
+  });
+
+  // Propagate to all crews (only the edited columns)
+  propagateTaskFromMaster_(rowValues[idIdx], crews, editedColsArray, table.header);
+
+  logInfo_('SYNC_COMPLETE', {
+    taskId: rowValues[idIdx],
+    taskName,
+    source: 'master'
+  });
 }
 
 /***************
@@ -515,17 +697,8 @@ function bootstrap() {
 
     stampMissingMetaInTable_(masterTable);
 
-    // Reconcile and sort
-    reconcile(false); // Don't sort individually, we'll sort once at the end
-
-    // Final sort of master
-    sortTasksTableByPriority_(getTasksTable_(openSheet_(CONFIG.masterSpreadsheetId, CONFIG.masterSheetName)));
-
-    // Sort all crew tables
-    for (const crew of crews) {
-      const crewSheet = openSheet_(crew.spreadsheetId, `${crew.crewName} Crew`);
-      sortTasksTableByPriority_(getTasksTable_(crewSheet));
-    }
+    // Reconcile (no sorting)
+    reconcile();
 
   } finally {
     PropertiesService.getScriptProperties().deleteProperty('SYNC_IN_PROGRESS');
@@ -533,7 +706,7 @@ function bootstrap() {
   }
 }
 
-function reconcile(sortAfterEach = false) {
+function reconcile() {
   const crews = loadCrewsFromMappings_();
 
   const masterSheet = openSheet_(CONFIG.masterSpreadsheetId, CONFIG.masterSheetName);
@@ -542,27 +715,14 @@ function reconcile(sortAfterEach = false) {
 
   const idx = buildIndexById_(masterTable);
   for (const id of Object.keys(idx)) {
-    propagateTaskFromMaster_(id, crews, sortAfterEach);
-  }
-
-  if (!sortAfterEach) {
-    // Sort everything once at the end
-    sortTasksTableByPriority_(getTasksTable_(masterSheet));
-    for (const crew of crews) {
-      try {
-        const crewSheet = openSheet_(crew.spreadsheetId, `${crew.crewName} Crew`);
-        sortTasksTableByPriority_(getTasksTable_(crewSheet));
-      } catch (err) {
-        console.error(`Failed to sort ${crew.crewName}: ${err.message}`);
-      }
-    }
+    propagateTaskFromMaster_(id, crews);
   }
 }
 
 /***************
  * PROPAGATION
  ***************/
-function propagateTaskFromMaster_(taskId, crews, sortAfterEach = false) {
+function propagateTaskFromMaster_(taskId, crews, editedColIndices = null, sourceHeader = null) {
   if (!taskId) return;
 
   const masterSheet = openSheet_(CONFIG.masterSpreadsheetId, CONFIG.masterSheetName);
@@ -584,6 +744,22 @@ function propagateTaskFromMaster_(taskId, crews, sortAfterEach = false) {
 
   const allowed = parseCrews_(mRow[crewsIdx]);
 
+  // Convert source column indices to master column indices (by header name)
+  // This handles the case where source and master might have different column orders
+  let editedMasterCols = null;
+  if (editedColIndices && editedColIndices.length > 0 && sourceHeader) {
+    editedMasterCols = new Set();
+    for (const srcIdx of editedColIndices) {
+      const headerName = sourceHeader[srcIdx];
+      if (headerName) {
+        const masterIdx = masterTable.headerMap[String(headerName).trim()];
+        if (masterIdx != null) {
+          editedMasterCols.add(masterIdx);
+        }
+      }
+    }
+  }
+
   for (const crew of crews) {
     const crewKey = String(crew.crewName).trim().toLowerCase();
     const shouldHave = allowed.has(crewKey);
@@ -603,8 +779,19 @@ function propagateTaskFromMaster_(taskId, crews, sortAfterEach = false) {
 
     if (!shouldHave) {
       if (localRowNum) {
+        logInfo_('PROPAGATE_DELETE', {
+          taskId,
+          crew: crew.crewName,
+          row: localRowNum,
+          reason: 'Crew not in allowed list'
+        });
         sheet.deleteRow(localRowNum);
-        if (sortAfterEach) sortTasksTableByPriority_(getTasksTable_(sheet));
+      } else {
+        logDebug_('PROPAGATE_SKIP', {
+          taskId,
+          crew: crew.crewName,
+          reason: 'shouldHave=false, no local row'
+        });
       }
       continue;
     }
@@ -614,8 +801,12 @@ function propagateTaskFromMaster_(taskId, crews, sortAfterEach = false) {
     const alignedRich = alignRichRowToHeader_(masterTable.header, mRich, table.header);
 
     if (!localRowNum) {
-      appendRowAtTable_(sheet, table, aligned, alignedFormulas, alignedRich);
-      if (sortAfterEach) sortTasksTableByPriority_(getTasksTable_(sheet));
+      logInfo_('PROPAGATE_ADD', {
+        taskId,
+        crew: crew.crewName,
+        reason: 'Task not in crew, adding'
+      });
+      insertRowAtTableTop_(sheet, table, aligned, alignedFormulas, alignedRich);
       continue;
     }
 
@@ -623,19 +814,42 @@ function propagateTaskFromMaster_(taskId, crews, sortAfterEach = false) {
     const localRow = localRange.getValues()[0];
     const lUpdatedAt = localRow[table.headerMap.UpdatedAt] || '';
 
-    // If local is newer, pull it back to master
+    // If local is newer, pull it back to master (don't overwrite local edits)
     if (lUpdatedAt && mUpdatedAt && lUpdatedAt > mUpdatedAt) {
       const localFormulas = localRange.getFormulas()[0];
       const localRich = localRange.getRichTextValues()[0];
       const masterIndex2 = buildIndexById_(masterTable);
       upsertIntoMaster_(masterTable, masterIndex2, table.header, localRow, localFormulas, localRich);
-      if (sortAfterEach) sortTasksTableByPriority_(getTasksTable_(masterSheet));
       continue;
     }
 
-    // Push master to local
-    writeRowPreserveLinks_(sheet, localRowNum, table.startCol, aligned, alignedFormulas, alignedRich);
-    if (sortAfterEach) sortTasksTableByPriority_(getTasksTable_(sheet));
+    // Push master to local - field-level if we have that info
+    if (editedMasterCols && editedMasterCols.size > 0) {
+      // Map master column indices to local (crew) column indices by header name
+      for (const masterIdx of editedMasterCols) {
+        const headerName = masterTable.header[masterIdx];
+        if (!headerName) continue;
+
+        const localIdx = table.headerMap[String(headerName).trim()];
+        if (localIdx == null) continue;
+
+        const colNum = table.startCol + localIdx;
+        const value = aligned[localIdx];
+        const formula = alignedFormulas[localIdx];
+        const rich = alignedRich[localIdx];
+
+        if (formula && String(formula).trim() !== '') {
+          sheet.getRange(localRowNum, colNum).setFormula(formula);
+        } else if (richHasLink_(rich)) {
+          sheet.getRange(localRowNum, colNum).setRichTextValue(rich);
+        } else {
+          sheet.getRange(localRowNum, colNum).setValue(value);
+        }
+      }
+    } else {
+      // No field-level info - update entire row (fallback for reconcile)
+      writeRowPreserveLinks_(sheet, localRowNum, table.startCol, aligned, alignedFormulas, alignedRich);
+    }
   }
 }
 
@@ -814,7 +1028,7 @@ function ensureCrewListedInCrewsCell_(rowValues, headerMap, crewName) {
 /***************
  * ROW OPERATIONS
  ***************/
-function upsertIntoMaster_(masterTable, masterIndex, sourceHeader, sourceRow, sourceFormulasRow = null, sourceRichRow = null) {
+function upsertIntoMaster_(masterTable, masterIndex, sourceHeader, sourceRow, sourceFormulasRow = null, sourceRichRow = null, editedColIndices = null) {
   const masterSheet = masterTable.sheet;
 
   const sMap = {};
@@ -833,7 +1047,8 @@ function upsertIntoMaster_(masterTable, masterIndex, sourceHeader, sourceRow, so
 
   const existingRowNum = masterIndex[taskId];
   if (!existingRowNum) {
-    appendRowAtTable_(masterSheet, masterTable, aligned, alignedFormulas, alignedRich);
+    // New task - insert entire row
+    insertRowAtTableTop_(masterSheet, masterTable, aligned, alignedFormulas, alignedRich);
     return;
   }
 
@@ -842,35 +1057,58 @@ function upsertIntoMaster_(masterTable, masterIndex, sourceHeader, sourceRow, so
   const existing = masterSheet.getRange(existingRowNum, masterTable.startCol, 1, masterTable.numCols).getValues()[0];
   const existingUpdated = existing[mUpdatedIdx] || '';
 
-  // Skip if existing is newer
+  // Skip if existing is newer (overall row timestamp check)
   if (existingUpdated && incomingUpdated && existingUpdated > incomingUpdated) return;
 
-  writeRowPreserveLinks_(masterSheet, existingRowNum, masterTable.startCol, aligned, alignedFormulas, alignedRich);
+  // Field-level sync: only update the edited columns if specified
+  if (editedColIndices && editedColIndices.length > 0) {
+    // Map source column indices to master column indices by header name
+    const editedMasterCols = new Set();
+    for (const srcIdx of editedColIndices) {
+      const headerName = sourceHeader[srcIdx];
+      if (headerName) {
+        const masterIdx = masterTable.headerMap[String(headerName).trim()];
+        if (masterIdx != null) {
+          editedMasterCols.add(masterIdx);
+        }
+      }
+    }
+
+    // Update only the edited columns
+    for (const masterIdx of editedMasterCols) {
+      const colNum = masterTable.startCol + masterIdx;
+      const value = aligned[masterIdx];
+      const formula = alignedFormulas[masterIdx];
+      const rich = alignedRich[masterIdx];
+
+      if (formula && String(formula).trim() !== '') {
+        masterSheet.getRange(existingRowNum, colNum).setFormula(formula);
+      } else if (richHasLink_(rich)) {
+        masterSheet.getRange(existingRowNum, colNum).setRichTextValue(rich);
+      } else {
+        masterSheet.getRange(existingRowNum, colNum).setValue(value);
+      }
+    }
+  } else {
+    // No field-level info - update entire row (fallback for bootstrap/reconcile)
+    writeRowPreserveLinks_(masterSheet, existingRowNum, masterTable.startCol, aligned, alignedFormulas, alignedRich);
+  }
 }
 
-function appendRowAtTable_(sheet, table, rowValues, formulasRow = null, richRow = null) {
-  const { startRow, startCol, numCols, headerMap, header } = table;
-  const scanColName = headerMap[CONFIG.taskTitleHeader] != null ? CONFIG.taskTitleHeader : header[0];
-  const scanIdx = headerMap[scanColName];
-  const scanCol = startCol + scanIdx;
+/**
+ * Insert a new row at the top of the tasks table (right after the header row).
+ * This avoids issues with sorting changing row positions during sync.
+ */
+function insertRowAtTableTop_(sheet, table, rowValues, formulasRow = null, richRow = null) {
+  const { startRow, startCol, numCols } = table;
 
-  // Find next empty row - get all values at once instead of one at a time
-  const lastRow = sheet.getLastRow();
-  const maxScan = Math.max(0, lastRow - startRow);
-  let r = startRow + 1;
-
-  if (maxScan > 0) {
-    const colVals = sheet.getRange(startRow + 1, scanCol, maxScan, 1).getValues();
-    for (let i = 0; i < colVals.length; i++) {
-      const v = colVals[i][0];
-      if (v === '' || v == null) break;
-      r++;
-    }
-  }
+  // Insert a new row right after the header
+  const insertRowNum = startRow + 1;
+  sheet.insertRowAfter(startRow);
 
   writeRowPreserveLinks_(
     sheet,
-    r,
+    insertRowNum,
     startCol,
     rowValues,
     formulasRow || new Array(numCols).fill(''),

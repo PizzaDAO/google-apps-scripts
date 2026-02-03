@@ -172,7 +172,11 @@ const SEND_LABEL_TEXT = 'Announce?';
 const SEND_VALUE = 'Send';
 const SENT_VALUE = 'Sent';
 const LAST_SENT_LABEL_TEXT = 'Last Sent:';
-const PASSWORD = getSecret_('ANNOUNCE_PASSWORD');
+
+// Lazy-load password to avoid errors when running setup functions
+function getPassword_() {
+  return getSecret_('ANNOUNCE_PASSWORD');
+}
 
 // Internal: prevents the script's own setValue() from re-triggering the password prompt
 const BYPASS_PROP_KEY = 'BYPASS_NEXT_ONEDIT';
@@ -239,7 +243,7 @@ function sendAll(e) {
     }
 
     const entered = String(resp.getResponseText() || '').trim();
-    if (entered !== PASSWORD) {
+    if (entered !== getPassword_()) {
       ui.alert('Incorrect password. Actions not run.');
       setBypassThenSetValue_(props, sendCell, '');
       return;
@@ -316,10 +320,11 @@ function setBypassThenSetValue_(props, cell, value) {
  * CONFIG
  ***********************/
 // ====== CONFIG: X app credentials (Script Properties) ======
-const TW_CONSUMER_KEY = getSecret_('X_CONSUMER_KEY');
-const TW_CONSUMER_SECRET = getSecret_('X_CONSUMER_SECRET');
-const TW_ACCESS_TOKEN = getSecret_('X_ACCESS_TOKEN');
-const TW_ACCESS_TOKEN_SECRET = getSecret_('X_ACCESS_TOKEN_SECRET');
+// Lazy-loaded to avoid errors when running setup functions
+function getTwConsumerKey_() { return getSecret_('X_CONSUMER_KEY'); }
+function getTwConsumerSecret_() { return getSecret_('X_CONSUMER_SECRET'); }
+function getTwAccessToken_() { return getSecret_('X_ACCESS_TOKEN'); }
+function getTwAccessTokenSecret_() { return getSecret_('X_ACCESS_TOKEN_SECRET'); }
 
 // Drive folder containing subfolders of GIFs
 const DRIVE_GIF_FOLDER_ID = '1DgzVx8aL6PgPm0-Np9gQMPywUEBVBxuA';
@@ -493,8 +498,8 @@ function getCrewLookupStringFromActiveSpreadsheet_(spreadsheet) {
 /***********************
  * Emoji lookup
  * Uses roster spreadsheet 2nd sheet:
- * - Column E: Crew
- * - Column F: Emoji
+ * - Finds "Crew" column by header
+ * - Finds "Emoji" column by header
  ***********************/
 function lookupEmojiForCrew_(crew) {
   const ss = SpreadsheetApp.openById(CREW_LOOKUP_SPREADSHEET_ID);
@@ -502,14 +507,30 @@ function lookupEmojiForCrew_(crew) {
   if (!sheet) throw new Error('Crew lookup sheet not found at index ' + CREW_LOOKUP_SHEET_INDEX);
 
   const lastRow = sheet.getLastRow();
-  if (lastRow < 1) throw new Error('Crew lookup sheet is empty.');
+  const lastCol = sheet.getLastColumn();
+  if (lastRow < 1 || lastCol < 1) throw new Error('Crew lookup sheet is empty.');
 
-  // Read columns E:F
-  const values = sheet.getRange(1, 5, lastRow, 2).getValues(); // col 5=E, width 2 => E,F
+  // Read all data including headers
+  const values = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+  const headers = values[0].map(h => String(h || '').trim().toLowerCase());
 
-  for (let i = 0; i < values.length; i++) {
-    const rowCrew = String(values[i][0] || '').trim();
-    const rowEmoji = String(values[i][1] || '').trim();
+  // Find column indices by header name
+  const crewColIndex = headers.indexOf('crew');
+  const emojiColIndex = headers.indexOf('emoji');
+
+  if (crewColIndex === -1) {
+    Logger.log('Could not find "Crew" column header. Headers: ' + JSON.stringify(headers));
+    return '🍕';
+  }
+  if (emojiColIndex === -1) {
+    Logger.log('Could not find "Emoji" column header. Headers: ' + JSON.stringify(headers));
+    return '🍕';
+  }
+
+  // Search for crew (skip header row)
+  for (let i = 1; i < values.length; i++) {
+    const rowCrew = String(values[i][crewColIndex] || '').trim();
+    const rowEmoji = String(values[i][emojiColIndex] || '').trim();
     if (rowCrew && rowCrew.toLowerCase() === crew.toLowerCase()) {
       Logger.log('Emoji lookup match: crew="' + rowCrew + '" emoji="' + rowEmoji + '"');
       return rowEmoji || '🍕';
@@ -648,11 +669,11 @@ function buildOAuth1Header_(method, url, requestParams) {
   const queryParams = parseQueryParams_(url);
 
   const oauthParams = {
-    oauth_consumer_key: TW_CONSUMER_KEY,
+    oauth_consumer_key: getTwConsumerKey_(),
     oauth_nonce: generateNonce_(),
     oauth_signature_method: 'HMAC-SHA1',
     oauth_timestamp: Math.floor(Date.now() / 1000).toString(),
-    oauth_token: TW_ACCESS_TOKEN,
+    oauth_token: getTwAccessToken_(),
     oauth_version: '1.0'
   };
 
@@ -660,7 +681,7 @@ function buildOAuth1Header_(method, url, requestParams) {
   const baseString = buildSignatureBaseString_(method, baseUrl, sigParams);
 
   const signingKey =
-    percentEncode_(TW_CONSUMER_SECRET) + '&' + percentEncode_(TW_ACCESS_TOKEN_SECRET);
+    percentEncode_(getTwConsumerSecret_()) + '&' + percentEncode_(getTwAccessTokenSecret_());
 
   const rawSig = Utilities.computeHmacSignature(
     Utilities.MacAlgorithm.HMAC_SHA_1,
@@ -1374,20 +1395,50 @@ function startDiscordEvent(spreadsheet) {
 }
 
 /**
+ * Run this FIRST to delete all triggers (prevents background errors)
+ */
+function deleteAllTriggers() {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(t => ScriptApp.deleteTrigger(t));
+  Logger.log('Deleted ' + triggers.length + ' triggers');
+}
+
+/**
+ * Run this SECOND to set ALL required secrets
+ */
+function setAllSecrets() {
+  const props = PropertiesService.getScriptProperties();
+
+  // Password
+  props.setProperty('ANNOUNCE_PASSWORD', 'YOUR_ANNOUNCE_PASSWORD_HERE');
+
+  // Bot API
+  props.setProperty('BOT_API_KEY', 'YOUR_BOT_API_KEY_HERE');
+
+  // Twitter/X credentials
+  props.setProperty('X_CONSUMER_KEY', 'YOUR_X_CONSUMER_KEY_HERE');
+  props.setProperty('X_CONSUMER_SECRET', 'YOUR_X_CONSUMER_SECRET_HERE');
+  props.setProperty('X_ACCESS_TOKEN', 'YOUR_X_ACCESS_TOKEN_HERE');
+  props.setProperty('X_ACCESS_TOKEN_SECRET', 'YOUR_X_ACCESS_TOKEN_SECRET_HERE');
+
+  Logger.log('All secrets set!');
+}
+
+/**
  * Run once to create an installed onEdit trigger that calls sendAll(e).
  * This will run on "HEAD" (current code in the script project).
  */
 function setupOnEditSendAllTrigger() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-
   // Remove existing triggers for sendAll to avoid duplicates
   deleteTriggersForHandler_('sendAll');
 
-  // Create installed onEdit trigger
+  // Create installed onEdit trigger using spreadsheet ID directly
   ScriptApp.newTrigger('sendAll')
-    .forSpreadsheet(ss)
+    .forSpreadsheet('1PGb50v1wu3QVEyft5IR6wF_qnO8KRboeLghp48cbuEg')
     .onEdit()
     .create();
+
+  Logger.log('Trigger installed for sendAll!');
 }
 
 /**
@@ -1411,7 +1462,7 @@ function deleteTriggersForHandler_(handlerName) {
 
 // ===================== CONFIG =====================
 const BOT_BASE_URL = "https://pizzadao-discord-bot-production.up.railway.app"; // no trailing slash
-const BOT_API_KEY = getSecret_('BOT_API_KEY'); // Script Property
+function getBotApiKey_() { return getSecret_('BOT_API_KEY'); } // Lazy-loaded
 const VOICE_CHANNEL_ID = "823956905739026442";
 // ==================================================
 
@@ -1677,7 +1728,7 @@ function fetchVoiceAttendance_() {
   const res = UrlFetchApp.fetch(url, {
     method: "get",
     muteHttpExceptions: true,
-    headers: { Authorization: "Bearer " + BOT_API_KEY },
+    headers: { Authorization: "Bearer " + getBotApiKey_() },
   });
 
   const code = res.getResponseCode();

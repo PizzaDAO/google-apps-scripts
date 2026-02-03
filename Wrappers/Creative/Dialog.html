@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 15px;
+    }
+    .field {
+      margin-bottom: 15px;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+    }
+    input[type="password"] {
+      width: 100%;
+      padding: 8px;
+      box-sizing: border-box;
+    }
+    .checkbox-group {
+      margin: 10px 0;
+    }
+    .checkbox-item {
+      margin: 8px 0;
+      display: flex;
+      align-items: center;
+    }
+    .checkbox-item input {
+      margin-right: 8px;
+    }
+    .checkbox-item label {
+      display: inline;
+      margin: 0;
+      cursor: pointer;
+    }
+    .buttons {
+      margin-top: 20px;
+      text-align: right;
+    }
+    button {
+      padding: 8px 16px;
+      margin-left: 10px;
+      cursor: pointer;
+    }
+    button.primary {
+      background-color: #4285f4;
+      color: white;
+      border: none;
+      border-radius: 4px;
+    }
+    button.primary:hover {
+      background-color: #3367d6;
+    }
+    button.primary:disabled {
+      background-color: #ccc;
+      cursor: not-allowed;
+    }
+    .error {
+      color: red;
+      margin-top: 10px;
+      display: none;
+    }
+    .status {
+      color: #666;
+      margin-top: 10px;
+      display: none;
+      font-style: italic;
+    }
+    .section-header {
+      font-weight: bold;
+      margin-top: 15px;
+      margin-bottom: 10px;
+      padding-bottom: 5px;
+      border-bottom: 1px solid #ddd;
+    }
+  </style>
+</head>
+<body>
+  <div class="field">
+    <label for="password">Password:</label>
+    <input type="password" id="password" autofocus>
+  </div>
+
+  <div class="section-header">Actions to run:</div>
+
+  <div class="checkbox-group">
+    <div class="checkbox-item">
+      <input type="checkbox" id="discordEvent" checked>
+      <label for="discordEvent">Start Discord Event</label>
+    </div>
+    <div class="checkbox-item">
+      <input type="checkbox" id="tweet" checked>
+      <label for="tweet">Send Tweet</label>
+    </div>
+    <div class="checkbox-item">
+      <input type="checkbox" id="postGeneral" checked>
+      <label for="postGeneral">Post to General</label>
+    </div>
+    <div class="checkbox-item">
+      <input type="checkbox" id="postBand" checked>
+      <label for="postBand">Post !band</label>
+    </div>
+    <div class="checkbox-item">
+      <input type="checkbox" id="postCrew" checked>
+      <label for="postCrew">Post to Crew Channel</label>
+    </div>
+    <div class="checkbox-item">
+      <input type="checkbox" id="attendance" checked>
+      <label for="attendance">Take Attendance</label>
+    </div>
+  </div>
+
+  <div id="error" class="error"></div>
+  <div id="status" class="status"></div>
+
+  <div class="buttons">
+    <button onclick="google.script.host.close()">Cancel</button>
+    <button id="submitBtn" class="primary" onclick="submitForm()">Send</button>
+  </div>
+
+  <script>
+    function submitForm() {
+      var data = {
+        password: document.getElementById('password').value,
+        discordEvent: document.getElementById('discordEvent').checked,
+        tweet: document.getElementById('tweet').checked,
+        postGeneral: document.getElementById('postGeneral').checked,
+        postBand: document.getElementById('postBand').checked,
+        postCrew: document.getElementById('postCrew').checked,
+        attendance: document.getElementById('attendance').checked
+      };
+
+      // Validate at least one action is selected
+      var hasAction = data.discordEvent || data.tweet ||
+                      data.postGeneral || data.postBand ||
+                      data.postCrew || data.attendance;
+
+      if (!hasAction) {
+        document.getElementById('error').textContent = 'Please select at least one action';
+        document.getElementById('error').style.display = 'block';
+        return;
+      }
+
+      if (!data.password) {
+        document.getElementById('error').textContent = 'Please enter the password';
+        document.getElementById('error').style.display = 'block';
+        return;
+      }
+
+      // Hide error, show status
+      document.getElementById('error').style.display = 'none';
+      document.getElementById('status').textContent = 'Sending announcement...';
+      document.getElementById('status').style.display = 'block';
+
+      // Disable submit button
+      document.getElementById('submitBtn').disabled = true;
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          document.getElementById('status').style.display = 'none';
+          document.getElementById('submitBtn').disabled = false;
+
+          if (result && result.success) {
+            // Show success message with tweet URL if available
+            var msg = 'Announcement sent successfully!';
+            if (result.results && result.results.tweet && result.results.tweet.url) {
+              msg += '\n\nTweet: ' + result.results.tweet.url;
+            }
+            alert(msg);
+            google.script.host.close();
+          } else {
+            document.getElementById('error').textContent = (result && result.error) || 'An error occurred';
+            document.getElementById('error').style.display = 'block';
+          }
+        })
+        .withFailureHandler(function(err) {
+          document.getElementById('status').style.display = 'none';
+          document.getElementById('submitBtn').disabled = false;
+          document.getElementById('error').textContent = err.message || 'An error occurred';
+          document.getElementById('error').style.display = 'block';
+        })
+        .handleSendActions(data);
+    }
+
+    // Allow Enter key to submit
+    document.getElementById('password').addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') {
+        submitForm();
+      }
+    });
+
+    // Quick select all / none
+    document.addEventListener('DOMContentLoaded', function() {
+      // Add double-click handler to section header to toggle all
+      var header = document.querySelector('.section-header');
+      if (header) {
+        header.title = 'Double-click to toggle all';
+        header.style.cursor = 'pointer';
+        header.addEventListener('dblclick', function() {
+          var checkboxes = document.querySelectorAll('.checkbox-item input[type="checkbox"]');
+          var allChecked = Array.from(checkboxes).every(function(cb) { return cb.checked; });
+          checkboxes.forEach(function(cb) { cb.checked = !allChecked; });
+        });
+      }
+    });
+  </script>
+</body>
+</html>

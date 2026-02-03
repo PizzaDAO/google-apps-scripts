@@ -1,0 +1,12 @@
+{
+  "timeZone": "America/New_York",
+  "dependencies": {
+    "libraries": [{
+      "userSymbol": "TaskSyncLib",
+      "libraryId": "1GrhLWqcuX6pTjLX44zY-8sjvTuU8JNz7-JVl6KXu3lzdqxk4qOFGgQ6j",
+      "version": "13"
+    }]
+  },
+  "exceptionLogging": "STACKDRIVER",
+  "runtimeVersion": "V8"
+}

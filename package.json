@@ -1,0 +1,24 @@
+{
+  "name": "google-apps-scripts",
+  "version": "1.0.0",
+  "description": "Important Setup Step\r Before running these, you must add your secrets to your project:",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PizzaDAO/google-apps-scripts.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/PizzaDAO/google-apps-scripts/issues"
+  },
+  "homepage": "https://github.com/PizzaDAO/google-apps-scripts#readme",
+  "dependencies": {
+    "googleapis": "^170.0.0",
+    "open": "^11.0.0"
+  }
+}

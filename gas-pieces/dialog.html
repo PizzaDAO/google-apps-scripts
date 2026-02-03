@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 15px; }
+    .field { margin-bottom: 15px; }
+    label { display: block; margin-bottom: 5px; }
+    input[type="password"] { width: 100%; padding: 8px; box-sizing: border-box; }
+    .checkbox-group { margin: 10px 0; }
+    .checkbox-item { margin: 8px 0; display: flex; align-items: center; }
+    .checkbox-item input { margin-right: 8px; }
+    .checkbox-item label { display: inline; margin: 0; cursor: pointer; }
+    .buttons { margin-top: 20px; text-align: right; }
+    button { padding: 8px 16px; margin-left: 10px; cursor: pointer; }
+    .error { color: red; margin-top: 10px; display: none; }
+  </style>
+</head>
+<body>
+  <div class="field">
+    <label for="password">Password:</label>
+    <input type="password" id="password" autofocus>
+  </div>
+
+  <div class="checkbox-group">
+    <label><strong>Actions to run:</strong></label>
+    <div class="checkbox-item">
+      <input type="checkbox" id="discordEvent" checked>
+      <label for="discordEvent">Start Discord Event</label>
+    </div>
+    <div class="checkbox-item">
+      <input type="checkbox" id="tweet" checked>
+      <label for="tweet">Send Tweet</label>
+    </div>
+    <div class="checkbox-item">
+      <input type="checkbox" id="postGeneral" checked>
+      <label for="postGeneral">Post to General</label>
+    </div>
+    <div class="checkbox-item">
+      <input type="checkbox" id="postBand" checked>
+      <label for="postBand">Post !band</label>
+    </div>
+    <div class="checkbox-item">
+      <input type="checkbox" id="postCrew" checked>
+      <label for="postCrew">Post to Crew Channel</label>
+    </div>
+    <div class="checkbox-item">
+      <input type="checkbox" id="attendance" checked>
+      <label for="attendance">Take Attendance</label>
+    </div>
+  </div>
+
+  <div id="error" class="error"></div>
+
+  <div class="buttons">
+    <button onclick="google.script.host.close()">Cancel</button>
+    <button onclick="submitForm()">OK</button>
+  </div>
+
+  <script>
+    function submitForm() {
+      var data = {
+        password: document.getElementById('password').value,
+        discordEvent: document.getElementById('discordEvent').checked,
+        tweet: document.getElementById('tweet').checked,
+        postGeneral: document.getElementById('postGeneral').checked,
+        postBand: document.getElementById('postBand').checked,
+        postCrew: document.getElementById('postCrew').checked,
+        attendance: document.getElementById('attendance').checked
+      };
+
+      document.getElementById('error').style.display = 'none';
+
+      google.script.run
+        .withSuccessHandler(function() { google.script.host.close(); })
+        .withFailureHandler(function(err) {
+          document.getElementById('error').textContent = err.message || 'An error occurred';
+          document.getElementById('error').style.display = 'block';
+        })
+        .handleSendActions(data);
+    }
+
+    // Allow Enter key to submit
+    document.getElementById('password').addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') submitForm();
+    });
+  </script>
+</body>
+</html>
