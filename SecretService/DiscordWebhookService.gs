@@ -174,7 +174,8 @@ function buildTaskEmbeds_(sheet, lastRow, muscleIdToDiscordTag, muscleIdToName, 
 
   const numTaskRows = lastRow - firstDataRowNumber + 1;
   const taskTable = sheet.getRange(firstDataRowNumber, 1, numTaskRows, 6).getValues();
-  const taskRichTexts = sheet.getRange(firstDataRowNumber, 2, numTaskRows, 1).getRichTextValues();
+  // Column 3 = C = Task Name (where hyperlinks are)
+  const taskRichTexts = sheet.getRange(firstDataRowNumber, 3, numTaskRows, 1).getRichTextValues();
 
   const clean = (v) => {
     if (v === null || v === undefined) return '—';
